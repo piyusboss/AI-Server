@@ -10,7 +10,7 @@ const serviceAccount = JSON.parse(await Deno.readTextFile("./serviceAccountKey.j
 
 initializeApp({
   credential: cert(serviceAccount),
-  storageBucket: "ai-model-9a473.appspot.com" // Replace with your storage bucket URL
+  storageBucket: "ai-model-9a473-firebase-adminsdk-fbsvc-672808451d.json" // Replace with your storage bucket URL
 });
 
 const auth = getAuth();
