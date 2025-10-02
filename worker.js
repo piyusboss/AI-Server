@@ -1,21 +1,21 @@
-// Step 1: Updated Imports
-import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
-import { initializeApp, cert } from "https://esm.sh/firebase-admin@11.10.1/app";
-import { getAuth } from "https://esm.sh/firebase-admin@11.10.1/auth";
-import { getFirestore, FieldValue } from "https://esm.sh/firebase-admin@11.10.1/firestore";
-import { getStorage } from "https://esm.sh/firebase-admin@11.10.1/storage";
+// Imports ab chote aur clean ho gaye hain
+import { serve } from "std/http/server";
+import { initializeApp, cert } from "firebase-admin/app";
+import { getAuth } from "firebase-admin/auth";
+import { getFirestore, FieldValue } from "firebase-admin/firestore";
+import { getStorage } from "firebase-admin/storage";
 
-// Step 2: Read Service Account from Environment Variable
+// Environment Variable se key read karna (yeh aaisa hi rahega)
 const serviceAccountJson = Deno.env.get("FIREBASE_SERVICE_ACCOUNT");
 if (!serviceAccountJson) {
   throw new Error("FIREBASE_SERVICE_ACCOUNT environment variable not set!");
 }
 const serviceAccount = JSON.parse(serviceAccountJson);
 
-// Initialize Firebase App
+// Firebase App Initialize karna (yeh aaisa hi rahega)
 initializeApp({
   credential: cert(serviceAccount),
-  storageBucket: "ai-model-9a473.appspot.com" // Replace with your storage bucket URL
+  storageBucket: "ai-model-9a473.appspot.com" // Apne storage bucket ka naam daalein
 });
 
 const auth = getAuth();
@@ -24,31 +24,29 @@ const storage = getStorage();
 
 console.log("Deno server running!");
 
-// Main request handler
+// Main request handler (yeh poora logic aaisa hi rahega)
 async function handler(req) {
-    // Handle CORS preflight requests
+    // CORS preflight requests
     if (req.method === "OPTIONS") {
         return new Response(null, {
             status: 204,
             headers: {
-                "Access-Control-Allow-Origin": "*", // Be more specific in production
+                "Access-Control-Allow-Origin": "*",
                 "Access-Control-Allow-Methods": "POST, OPTIONS",
                 "Access-Control-Allow-Headers": "Content-Type, Authorization",
             },
         });
     }
     
-    // Standard headers for all responses
     const headers = { 
       "Content-Type": "application/json",
-      "Access-Control-Allow-Origin": "*" // Be more specific in production
+      "Access-Control-Allow-Origin": "*"
     };
 
     try {
         const { action, payload, idToken } = await req.json();
         let user = null;
 
-        // Verify ID token for protected actions
         if (idToken) {
             try {
                 user = await auth.verifyIdToken(idToken);
@@ -57,11 +55,10 @@ async function handler(req) {
             }
         }
         
-        // --- ACTION ROUTER (The switch case logic remains the same) ---
+        // --- ACTION ROUTER ---
         switch (action) {
-            // ... Aapka poora switch case yahan aayega ...
-            // (Maine ise yahan se hata diya hai taaki response lamba na ho,
-            // lekin aapka pichla switch-case code bilkul sahi hai aur yahan paste hoga)
+            // ...Aapke saare switch cases yahan aayenge...
+            // (Pichle code se copy kar lein)
             
             case 'getUserLastChatId':
                 if (!user) throw new Error("Authentication required.");
@@ -69,10 +66,10 @@ async function handler(req) {
                 const lastId = userDoc.exists ? userDoc.data().lastActiveChatId : null;
                 return new Response(JSON.stringify({ lastActiveChatId: lastId }), { status: 200, headers });
 
-            // ... Baaki saare cases bhi yahin rahenge ...
+            // ... Baaki saare cases ...
 
             default:
-                return new Response(JSON.stringify({ error: "Unknown action" }), { status: 400, headers });
+                return new Response(JSON.stringify({ error: `Action '${action}' not found.` }), { status: 400, headers });
         }
     } catch (error) {
         console.error("Server Error:", error);
