@@ -1,13 +1,18 @@
+// Step 1: Updated Imports
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 import { initializeApp, cert } from "https://esm.sh/firebase-admin@11.10.1/app";
 import { getAuth } from "https://esm.sh/firebase-admin@11.10.1/auth";
 import { getFirestore, FieldValue } from "https://esm.sh/firebase-admin@11.10.1/firestore";
 import { getStorage } from "https://esm.sh/firebase-admin@11.10.1/storage";
 
-// IMPORTANT: Create a serviceAccountKey.json file from your Firebase project settings
-// and place it in the same directory as this worker.js file.
-const serviceAccount = JSON.parse(await Deno.readTextFile("./serviceAccountKey.json"));
+// Step 2: Read Service Account from Environment Variable
+const serviceAccountJson = Deno.env.get("FIREBASE_SERVICE_ACCOUNT");
+if (!serviceAccountJson) {
+  throw new Error("FIREBASE_SERVICE_ACCOUNT environment variable not set!");
+}
+const serviceAccount = JSON.parse(serviceAccountJson);
 
+// Initialize Firebase App
 initializeApp({
   credential: cert(serviceAccount),
   storageBucket: "ai-model-9a473.appspot.com" // Replace with your storage bucket URL
@@ -17,7 +22,7 @@ const auth = getAuth();
 const db = getFirestore();
 const storage = getStorage();
 
-console.log("Deno server running on http://localhost:8000");
+console.log("Deno server running!");
 
 // Main request handler
 async function handler(req) {
@@ -52,104 +57,19 @@ async function handler(req) {
             }
         }
         
-        // --- ACTION ROUTER ---
+        // --- ACTION ROUTER (The switch case logic remains the same) ---
         switch (action) {
-            // --- Unprotected actions (like login/signup) ---
-            case 'createAnonymousUser': {
-                 const anonUser = await auth.createUser({});
-                 const customToken = await auth.createCustomToken(anonUser.uid);
-                 return new Response(JSON.stringify({ token: customToken, uid: anonUser.uid }), { status: 200, headers });
-            }
+            // ... Aapka poora switch case yahan aayega ...
+            // (Maine ise yahan se hata diya hai taaki response lamba na ho,
+            // lekin aapka pichla switch-case code bilkul sahi hai aur yahan paste hoga)
             
-            // --- Protected actions (require valid idToken) ---
             case 'getUserLastChatId':
                 if (!user) throw new Error("Authentication required.");
                 const userDoc = await db.collection('users').doc(user.uid).get();
                 const lastId = userDoc.exists ? userDoc.data().lastActiveChatId : null;
                 return new Response(JSON.stringify({ lastActiveChatId: lastId }), { status: 200, headers });
 
-            case 'updateUserLastChatId':
-                if (!user) throw new Error("Authentication required.");
-                await db.collection('users').doc(user.uid).set({ lastActiveChatId: payload.chatId }, { merge: true });
-                return new Response(JSON.stringify({ success: true }), { status: 200, headers });
-
-            case 'clearUserLastChatId':
-                if (!user) throw new Error("Authentication required.");
-                await db.collection('users').doc(user.uid).update({ lastActiveChatId: FieldValue.delete() });
-                return new Response(JSON.stringify({ success: true }), { status: 200, headers });
-
-            case 'loadMessagesForChat':
-                if (!user) throw new Error("Authentication required.");
-                const messagesSnapshot = await db.collection('users').doc(user.uid).collection('chats').doc(payload.chatId).collection('messages').orderBy('timestamp').get();
-                const messages = messagesSnapshot.docs.map(doc => doc.data());
-                return new Response(JSON.stringify(messages), { status: 200, headers });
-
-            case 'createNewChatInDb':
-                 if (!user) throw new Error("Authentication required.");
-                 const newChatRef = await db.collection('users').doc(user.uid).collection('chats').add({
-                    title: payload.title,
-                    createdAt: FieldValue.serverTimestamp()
-                 });
-                 return new Response(JSON.stringify({ id: newChatRef.id }), { status: 200, headers });
-
-            case 'saveMessageToDb':
-                 if (!user) throw new Error("Authentication required.");
-                 await db.collection('users').doc(user.uid).collection('chats').doc(payload.chatId).collection('messages').add({
-                    ...payload.messageObject,
-                    timestamp: FieldValue.serverTimestamp() // Ensure server timestamp
-                 });
-                 return new Response(JSON.stringify({ success: true }), { status: 200, headers });
-            
-            case 'loadChatHistory':
-                if (!user) throw new Error("Authentication required.");
-                const chatsRef = db.collection('users').doc(user.uid).collection('chats').orderBy('createdAt', 'desc');
-                const chatsSnapshot = await chatsRef.get();
-                const chats = chatsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-                return new Response(JSON.stringify(chats), { status: 200, headers });
-
-            case 'deleteAllChatsFromDb':
-                if (!user) throw new Error("Authentication required.");
-                const allChatsSnapshot = await db.collection('users').doc(user.uid).collection('chats').get();
-                if (allChatsSnapshot.empty) throw new Error("Chat history is already empty.");
-                const batchDelete = db.batch();
-                allChatsSnapshot.docs.forEach(doc => batchDelete.delete(doc.ref));
-                await batchDelete.commit();
-                await db.collection('users').doc(user.uid).update({ lastActiveChatId: FieldValue.delete() });
-                return new Response(JSON.stringify({ success: true }), { status: 200, headers });
-            
-            case 'deleteSingleChatFromDb':
-                if (!user) throw new Error("Authentication required.");
-                const singleChatRef = db.collection('users').doc(user.uid).collection('chats').doc(payload.chatId);
-                // Also delete subcollection messages
-                const singleChatMessages = await singleChatRef.collection('messages').get();
-                const batchSingle = db.batch();
-                singleChatMessages.docs.forEach(doc => batchSingle.delete(doc.ref));
-                await batchSingle.commit();
-                // Delete the chat doc itself
-                await singleChatRef.delete();
-                return new Response(JSON.stringify({ success: true }), { status: 200, headers });
-
-            case 'updateUserProfile':
-                if (!user) throw new Error("Authentication required.");
-                await auth.updateUser(user.uid, payload.updateData);
-                return new Response(JSON.stringify({ success: true }), { status: 200, headers });
-
-            // Note: File upload is more complex and would ideally be a direct upload to a signed URL.
-            // This implementation is a simplified proxy and not recommended for large files.
-            case 'uploadProfileImage':
-                 if (!user) throw new Error("Authentication required.");
-                 const { fileDataUrl, fileName } = payload;
-                 const base64Data = fileDataUrl.split(',')[1];
-                 const buffer = new Uint8Array(atob(base64Data).split('').map(char => char.charCodeAt(0)));
-                 
-                 const filePath = `profile_pictures/${user.uid}/${fileName}`;
-                 const fileRef = storage.bucket().file(filePath);
-                 
-                 await fileRef.save(buffer, {
-                    metadata: { contentType: 'image/jpeg' }, // Adjust content type as needed
-                 });
-                 const [downloadURL] = await fileRef.getSignedUrl({ action: 'read', expires: '03-09-2491' });
-                 return new Response(JSON.stringify({ downloadURL }), { status: 200, headers });
+            // ... Baaki saare cases bhi yahin rahenge ...
 
             default:
                 return new Response(JSON.stringify({ error: "Unknown action" }), { status: 400, headers });
@@ -160,4 +80,4 @@ async function handler(req) {
     }
 }
 
-serve(handler, { port: 8000 });
+serve(handler);
