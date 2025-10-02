@@ -1,0 +1,9 @@
+{
+  "imports": {
+    "firebase-admin/app": "https://esm.sh/firebase-admin@11.10.1/app",
+    "firebase-admin/auth": "https://esm.sh/firebase-admin@11.10.1/auth",
+    "firebase-admin/firestore": "https://esm.sh/firebase-admin@11.10.1/firestore",
+    "firebase-admin/storage": "https://esm.sh/firebase-admin@11.10.1/storage",
+    "std/http/server": "https://deno.land/std@0.177.0/http/server.ts"
+  }
+}
