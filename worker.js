@@ -6,7 +6,7 @@ import { getStorage } from "https://esm.sh/firebase-admin@11.10.1/storage";
 
 // IMPORTANT: Create a serviceAccountKey.json file from your Firebase project settings
 // and place it in the same directory as this worker.js file.
-const serviceAccount = JSON.parse(await Deno.readTextFile("./serviceAccountKey.json"));
+const serviceAccount = JSON.parse(await Deno.readTextFile("ai-model-9a473-firebase-adminsdk-fbsvc-672808451d.json"));
 
 initializeApp({
   credential: cert(serviceAccount),
