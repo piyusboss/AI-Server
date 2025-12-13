@@ -68,7 +68,7 @@ serve(async (req) => {
 
 // 1. Service Account Env Variable Parse karo
 function getServiceAccount() {
-  const json = Deno.env.get("FIREBASE_SERVICE_ACCOUNT");
+  const json = Deno.env.get("FIREBASE_SERVICEACCOUNT");
   if (!json) throw new Error("Missing FIREBASE_SERVICE_ACCOUNT env var");
   return JSON.parse(json);
 }
