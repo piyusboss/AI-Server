@@ -1,13 +1,14 @@
-/* main.ts - Universal Server (Create + Ban) */
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 
 // --- CONFIGURATION ---
+// Yeh wahi API Key hai jo aapke firebase_logic.js mein thi
 const FIREBASE_API_KEY = "AIzaSyA5pQNoLixbthxXZ6pMBy_bgahiVxpRSR0"; 
 
+// --- MAIN SERVER LOGIC ---
 serve(async (req) => {
   const url = new URL(req.url);
 
-  // 1. CORS Headers (Browser access allow karne ke liye)
+  // CORS Headers (Browser ko allow karne ke liye)
   const headers = new Headers({
     "Content-Type": "application/json",
     "Access-Control-Allow-Origin": "*",
@@ -15,77 +16,64 @@ serve(async (req) => {
     "Access-Control-Allow-Headers": "Content-Type, Authorization"
   });
 
-  // Preflight Request Handle
+  // Preflight Request Handle karo
   if (req.method === "OPTIONS") {
     return new Response(null, { status: 204, headers });
   }
 
-  // Sirf POST requests allow karein
-  if (req.method === "POST") {
+  // Route: Create Chat
+  if (url.pathname === "/create-chat" && req.method === "POST") {
     try {
-        // 2. User Authentication (Common for all routes)
-        const authHeader = req.headers.get("Authorization");
-        if (!authHeader?.startsWith("Bearer ")) {
-            return new Response(JSON.stringify({ error: "No token provided" }), { status: 401, headers });
-        }
-        const userToken = authHeader.split("Bearer ")[1];
-        
-        // Google se User Verify karein
-        const userData = await verifyUserToken(userToken);
-        const userId = userData.localId;
+      // 1. User ka Token nikalo
+      const authHeader = req.headers.get("Authorization");
+      if (!authHeader?.startsWith("Bearer ")) {
+        return new Response(JSON.stringify({ error: "No token provided" }), { status: 401, headers });
+      }
+      const userToken = authHeader.split("Bearer ")[1];
 
-        // 3. Server Authentication (Service Account Access)
-        const serviceAccount = getServiceAccount();
-        const accessToken = await getGoogleAccessToken(serviceAccount);
-        const projectId = serviceAccount.project_id;
+      // 2. User ko Verify karo (Using Google Identity API)
+      const userData = await verifyUserToken(userToken);
+      const userId = userData.localId;
 
-        // --- ROUTING LOGIC ---
+      // 3. Request Body se Title lo
+      const body = await req.json();
+      let title = body.title ? body.title.trim() : "New Chat";
+      if (title.length > 50) title = title.substring(0, 50);
 
-        // Route A: Create New Chat
-        if (url.pathname === "/create-chat") {
-            const body = await req.json();
-            let title = body.title ? body.title.trim() : "New Chat";
-            if (title.length > 50) title = title.substring(0, 50);
+      // 4. Server Authenticate karo (Get Service Account Access Token)
+      const serviceAccount = getServiceAccount();
+      const accessToken = await getGoogleAccessToken(serviceAccount);
 
-            const chatId = await createFirestoreChat(projectId, accessToken, userId, title);
-            
-            console.log(`[Create] Success: ${chatId}`);
-            return new Response(JSON.stringify({ success: true, chatId, title }), { status: 200, headers });
-        }
+      // 5. Firestore mein naya Chat banao (Using REST API)
+      const chatId = await createFirestoreChat(serviceAccount.project_id, accessToken, userId, title);
 
-        // Route B: Report Violation (Ban Logic)
-        if (url.pathname === "/report-violation") {
-            const body = await req.json();
-            const chatId = body.chatId;
-            if (!chatId) throw new Error("Missing chatId");
+      console.log(`[Success] Chat created: ${chatId} for user: ${userId}`);
 
-            const result = await handleBanLogic(projectId, accessToken, userId, chatId);
-            
-            console.log(`[Violation] Chat: ${chatId}, Count: ${result.violationCount}, Banned: ${result.isBanned}`);
-            return new Response(JSON.stringify(result), { status: 200, headers });
-        }
-
-        return new Response(JSON.stringify({ error: "Route not found" }), { status: 404, headers });
+      return new Response(JSON.stringify({ 
+        success: true, 
+        chatId: chatId, 
+        title: title 
+      }), { status: 200, headers });
 
     } catch (error) {
-        console.error("Server Error:", error.message);
-        return new Response(JSON.stringify({ error: error.message || "Internal Error" }), { status: 500, headers });
+      console.error("Error:", error.message);
+      return new Response(JSON.stringify({ error: error.message || "Server Error" }), { status: 500, headers });
     }
   }
 
-  return new Response("Nexari AI Server Active", { status: 200 });
+  return new Response("Nexari AI Lightweight Server Running", { status: 200 });
 });
 
-// --- HELPER FUNCTIONS ---
+// --- HELPER FUNCTIONS (MAGIC HAPPENS HERE) ---
 
-// 1. Env Variable Parser
+// 1. Service Account Env Variable Parse karo
 function getServiceAccount() {
   const json = Deno.env.get("FIREBASE_SERVICE_ACCOUNT");
   if (!json) throw new Error("Missing FIREBASE_SERVICE_ACCOUNT env var");
   return JSON.parse(json);
 }
 
-// 2. User Token Verification
+// 2. User Token Verify karo
 async function verifyUserToken(token: string) {
   const res = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${FIREBASE_API_KEY}`, {
     method: "POST",
@@ -97,91 +85,100 @@ async function verifyUserToken(token: string) {
   return data.users[0];
 }
 
-// 3. Firestore: Create Chat
+// 3. Firestore mein Document Create karo
 async function createFirestoreChat(projectId: string, accessToken: string, userId: string, title: string) {
+  // Firestore REST API Endpoint
   const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/users/${userId}/chats`;
+  
   const docData = {
     fields: {
       title: { stringValue: title },
       createdAt: { timestampValue: new Date().toISOString() },
-      violationCount: { integerValue: "0" },
-      isBanned: { booleanValue: false }
+      violationCount: { integerValue: "0" }, // Secure Field
+      isBanned: { booleanValue: false }      // Secure Field
     }
   };
+
   const res = await fetch(url, {
     method: "POST",
-    headers: { "Authorization": `Bearer ${accessToken}`, "Content-Type": "application/json" },
+    headers: { 
+      "Authorization": `Bearer ${accessToken}`,
+      "Content-Type": "application/json"
+    },
     body: JSON.stringify(docData)
   });
-  if (!res.ok) throw new Error(await res.text());
+
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`Firestore Error: ${err}`);
+  }
+
   const data = await res.json();
-  return data.name.split("/").pop(); // Extract ID
+  // Firestore returns full path, we need just the ID
+  const pathParts = data.name.split("/");
+  return pathParts[pathParts.length - 1];
 }
 
-// 4. Firestore: Ban Logic (Read -> Increment -> Update)
-async function handleBanLogic(projectId: string, accessToken: string, userId: string, chatId: string) {
-    const firestoreUrl = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/users/${userId}/chats/${chatId}`;
-    
-    // Step A: Get Current Data
-    const getRes = await fetch(firestoreUrl, {
-        headers: { "Authorization": `Bearer ${accessToken}` }
-    });
-    if (!getRes.ok) throw new Error("Chat not found");
-    const chatDoc = await getRes.json();
-    
-    // Step B: Increment Count
-    const currentCount = parseInt(chatDoc.fields?.violationCount?.integerValue || "0");
-    const newCount = currentCount + 1;
-    const BAN_THRESHOLD = 3; // 3 Strikes Rule
-    const shouldBan = newCount >= BAN_THRESHOLD;
-
-    // Step C: Update (PATCH)
-    const updateData: any = {
-        fields: {
-            violationCount: { integerValue: newCount.toString() },
-            isBanned: { booleanValue: shouldBan }
-        }
-    };
-    if (shouldBan) {
-        updateData.fields.bannedAt = { timestampValue: new Date().toISOString() };
-    }
-
-    // URL Param me fields batane padte hain jo update karne hain
-    let patchUrl = `${firestoreUrl}?updateMask.fieldPaths=violationCount&updateMask.fieldPaths=isBanned`;
-    if (shouldBan) patchUrl += `&updateMask.fieldPaths=bannedAt`;
-
-    const patchRes = await fetch(patchUrl, {
-        method: "PATCH",
-        headers: { "Authorization": `Bearer ${accessToken}`, "Content-Type": "application/json" },
-        body: JSON.stringify(updateData)
-    });
-
-    if (!patchRes.ok) throw new Error(await patchRes.text());
-
-    return { success: true, violationCount: newCount, isBanned: shouldBan };
-}
-
-// 5. Google Service Account Auth (Zero Dependency Crypto)
+// 4. Google Service Account Auth (Pure Web Crypto - No Libraries!)
 async function getGoogleAccessToken(serviceAccount: any) {
   const pem = serviceAccount.private_key;
   const clientEmail = serviceAccount.client_email;
+  
+  // PEM Key ko Binary mein convert karo
   const pemHeader = "-----BEGIN PRIVATE KEY-----";
   const pemFooter = "-----END PRIVATE KEY-----";
   const pemContents = pem.substring(pemHeader.length, pem.length - pemFooter.length - 1).replace(/\s/g, "");
   const binaryDerString = atob(pemContents);
   const binaryDer = new Uint8Array(binaryDerString.length);
-  for (let i = 0; i < binaryDerString.length; i++) { binaryDer[i] = binaryDerString.charCodeAt(i); }
-  const key = await crypto.subtle.importKey("pkcs8", binaryDer.buffer, { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, false, ["sign"]);
+  for (let i = 0; i < binaryDerString.length; i++) {
+    binaryDer[i] = binaryDerString.charCodeAt(i);
+  }
+
+  // Key Import karo
+  const key = await crypto.subtle.importKey(
+    "pkcs8",
+    binaryDer.buffer,
+    { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+
+  // JWT Header & Payload banao
   const header = { alg: "RS256", typ: "JWT" };
   const now = Math.floor(Date.now() / 1000);
-  const payload = { iss: clientEmail, scope: "https://www.googleapis.com/auth/datastore", aud: "https://oauth2.googleapis.com/token", exp: now + 3600, iat: now };
+  const payload = {
+    iss: clientEmail,
+    scope: "https://www.googleapis.com/auth/datastore",
+    aud: "https://oauth2.googleapis.com/token",
+    exp: now + 3600,
+    iat: now
+  };
+
   const strHeader = btoa(JSON.stringify(header));
   const strPayload = btoa(JSON.stringify(payload));
   const unsignedToken = `${strHeader}.${strPayload}`;
-  const signature = await crypto.subtle.sign("RSASSA-PKCS1-v1_5", key, new TextEncoder().encode(unsignedToken));
-  const base64UrlSignature = btoa(String.fromCharCode(...new Uint8Array(signature))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+
+  // Sign karo
+  const signature = await crypto.subtle.sign(
+    "RSASSA-PKCS1-v1_5",
+    key,
+    new TextEncoder().encode(unsignedToken)
+  );
+
+  // JWT finalize karo
+  // Deno ka btoa standard nahi hai URL safe ke liye, so replace karo
+  const base64UrlSignature = btoa(String.fromCharCode(...new Uint8Array(signature)))
+    .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    
   const jwt = `${unsignedToken}.${base64UrlSignature}`;
-  const tokenRes = await fetch("https://oauth2.googleapis.com/token", { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: `grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer&assertion=${jwt}` });
+
+  // Google se Access Token mango
+  const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: `grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer&assertion=${jwt}`
+  });
+
   const tokenData = await tokenRes.json();
   return tokenData.access_token;
 }
