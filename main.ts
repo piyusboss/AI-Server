@@ -1,15 +1,13 @@
-/* main.ts - Updated with Ban Route */
+/* main.ts - Universal Server (Create + Ban) */
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
-import { handleCreateChat } from "./New_chat.js"; // Note: .js extension for Deno imports
-// 🔥 Import the new handler
-import { handleReportViolation } from "./chat_ban.ts";
 
+// --- CONFIGURATION ---
 const FIREBASE_API_KEY = "AIzaSyA5pQNoLixbthxXZ6pMBy_bgahiVxpRSR0"; 
 
 serve(async (req) => {
   const url = new URL(req.url);
 
-  // CORS Headers
+  // 1. CORS Headers (Browser access allow karne ke liye)
   const headers = new Headers({
     "Content-Type": "application/json",
     "Access-Control-Allow-Origin": "*",
@@ -17,62 +15,77 @@ serve(async (req) => {
     "Access-Control-Allow-Headers": "Content-Type, Authorization"
   });
 
+  // Preflight Request Handle
   if (req.method === "OPTIONS") {
     return new Response(null, { status: 204, headers });
   }
 
-  // --- SHARED AUTH LOGIC (Extract User & Service Token) ---
-  // Har request ke liye humein user verify karna hai aur service token chahiye
-  // Isliye hum ise wrapper mein daal rahe hain taaki code clean rahe
-  
+  // Sirf POST requests allow karein
   if (req.method === "POST") {
     try {
-        // 1. Verify User
+        // 2. User Authentication (Common for all routes)
         const authHeader = req.headers.get("Authorization");
         if (!authHeader?.startsWith("Bearer ")) {
             return new Response(JSON.stringify({ error: "No token provided" }), { status: 401, headers });
         }
         const userToken = authHeader.split("Bearer ")[1];
+        
+        // Google se User Verify karein
         const userData = await verifyUserToken(userToken);
         const userId = userData.localId;
 
-        // 2. Get Server Access
+        // 3. Server Authentication (Service Account Access)
         const serviceAccount = getServiceAccount();
         const accessToken = await getGoogleAccessToken(serviceAccount);
+        const projectId = serviceAccount.project_id;
 
-        // --- ROUTING ---
+        // --- ROUTING LOGIC ---
 
-        // Route 1: Create Chat
+        // Route A: Create New Chat
         if (url.pathname === "/create-chat") {
-            // Note: Create chat logic abhi wahi purana wala use kar rahe hain jo main.ts mein integrated tha
-            // ya agar aapne New_chat.js alag rakha hai toh use call karein.
-            // Main yahan "Inline" logic use kar raha hoon consistency ke liye jo pichle step mein tha.
-            // Agar aapne pichla code use kiya tha toh:
-            return await createChatHandler(req, serviceAccount.project_id, accessToken, userId);
+            const body = await req.json();
+            let title = body.title ? body.title.trim() : "New Chat";
+            if (title.length > 50) title = title.substring(0, 50);
+
+            const chatId = await createFirestoreChat(projectId, accessToken, userId, title);
+            
+            console.log(`[Create] Success: ${chatId}`);
+            return new Response(JSON.stringify({ success: true, chatId, title }), { status: 200, headers });
         }
 
-        // Route 2: Report Violation (NEW) 🔥
+        // Route B: Report Violation (Ban Logic)
         if (url.pathname === "/report-violation") {
-            return await handleReportViolation(req, accessToken, serviceAccount.project_id, userId);
+            const body = await req.json();
+            const chatId = body.chatId;
+            if (!chatId) throw new Error("Missing chatId");
+
+            const result = await handleBanLogic(projectId, accessToken, userId, chatId);
+            
+            console.log(`[Violation] Chat: ${chatId}, Count: ${result.violationCount}, Banned: ${result.isBanned}`);
+            return new Response(JSON.stringify(result), { status: 200, headers });
         }
+
+        return new Response(JSON.stringify({ error: "Route not found" }), { status: 404, headers });
 
     } catch (error) {
         console.error("Server Error:", error.message);
-        return new Response(JSON.stringify({ error: error.message }), { status: 500, headers });
+        return new Response(JSON.stringify({ error: error.message || "Internal Error" }), { status: 500, headers });
     }
   }
 
-  return new Response("Nexari AI Secure Server Active", { status: 200 });
+  return new Response("Nexari AI Server Active", { status: 200 });
 });
 
 // --- HELPER FUNCTIONS ---
 
+// 1. Env Variable Parser
 function getServiceAccount() {
   const json = Deno.env.get("FIREBASE_SERVICE_ACCOUNT");
   if (!json) throw new Error("Missing FIREBASE_SERVICE_ACCOUNT env var");
   return JSON.parse(json);
 }
 
+// 2. User Token Verification
 async function verifyUserToken(token: string) {
   const res = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${FIREBASE_API_KEY}`, {
     method: "POST",
@@ -84,35 +97,71 @@ async function verifyUserToken(token: string) {
   return data.users[0];
 }
 
-// Inline Handler for Create Chat (reusing previous logic)
-async function createChatHandler(req: Request, projectId: string, accessToken: string, userId: string) {
-    const body = await req.json();
-    let title = body.title ? body.title.trim() : "New Chat";
-    if (title.length > 50) title = title.substring(0, 50);
-
-    const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/users/${userId}/chats`;
-    const docData = {
-        fields: {
-            title: { stringValue: title },
-            createdAt: { timestampValue: new Date().toISOString() },
-            violationCount: { integerValue: "0" },
-            isBanned: { booleanValue: false }
-        }
-    };
-
-    const res = await fetch(url, {
-        method: "POST",
-        headers: { "Authorization": `Bearer ${accessToken}`, "Content-Type": "application/json" },
-        body: JSON.stringify(docData)
-    });
-
-    if (!res.ok) throw new Error(await res.text());
-    const data = await res.json();
-    const pathParts = data.name.split("/");
-    return new Response(JSON.stringify({ success: true, chatId: pathParts[pathParts.length - 1], title }), { status: 200, headers: { "Content-Type": "application/json" } });
+// 3. Firestore: Create Chat
+async function createFirestoreChat(projectId: string, accessToken: string, userId: string, title: string) {
+  const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/users/${userId}/chats`;
+  const docData = {
+    fields: {
+      title: { stringValue: title },
+      createdAt: { timestampValue: new Date().toISOString() },
+      violationCount: { integerValue: "0" },
+      isBanned: { booleanValue: false }
+    }
+  };
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Authorization": `Bearer ${accessToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify(docData)
+  });
+  if (!res.ok) throw new Error(await res.text());
+  const data = await res.json();
+  return data.name.split("/").pop(); // Extract ID
 }
 
-// Google Auth (Pure Crypto)
+// 4. Firestore: Ban Logic (Read -> Increment -> Update)
+async function handleBanLogic(projectId: string, accessToken: string, userId: string, chatId: string) {
+    const firestoreUrl = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/users/${userId}/chats/${chatId}`;
+    
+    // Step A: Get Current Data
+    const getRes = await fetch(firestoreUrl, {
+        headers: { "Authorization": `Bearer ${accessToken}` }
+    });
+    if (!getRes.ok) throw new Error("Chat not found");
+    const chatDoc = await getRes.json();
+    
+    // Step B: Increment Count
+    const currentCount = parseInt(chatDoc.fields?.violationCount?.integerValue || "0");
+    const newCount = currentCount + 1;
+    const BAN_THRESHOLD = 3; // 3 Strikes Rule
+    const shouldBan = newCount >= BAN_THRESHOLD;
+
+    // Step C: Update (PATCH)
+    const updateData: any = {
+        fields: {
+            violationCount: { integerValue: newCount.toString() },
+            isBanned: { booleanValue: shouldBan }
+        }
+    };
+    if (shouldBan) {
+        updateData.fields.bannedAt = { timestampValue: new Date().toISOString() };
+    }
+
+    // URL Param me fields batane padte hain jo update karne hain
+    let patchUrl = `${firestoreUrl}?updateMask.fieldPaths=violationCount&updateMask.fieldPaths=isBanned`;
+    if (shouldBan) patchUrl += `&updateMask.fieldPaths=bannedAt`;
+
+    const patchRes = await fetch(patchUrl, {
+        method: "PATCH",
+        headers: { "Authorization": `Bearer ${accessToken}`, "Content-Type": "application/json" },
+        body: JSON.stringify(updateData)
+    });
+
+    if (!patchRes.ok) throw new Error(await patchRes.text());
+
+    return { success: true, violationCount: newCount, isBanned: shouldBan };
+}
+
+// 5. Google Service Account Auth (Zero Dependency Crypto)
 async function getGoogleAccessToken(serviceAccount: any) {
   const pem = serviceAccount.private_key;
   const clientEmail = serviceAccount.client_email;
