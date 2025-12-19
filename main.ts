@@ -1,8 +1,10 @@
 /* main.ts (Host: piyusboss-ai-server-22) - Database Manager */
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 
-const FIREBASE_API_KEY = "AIzaSyA5pQNoLixbthxXZ6pMBy_bgahiVxpRSR0"; 
-// 🔥 SAME SECRET KEY AS SERVER A
+// 🔥 UPDATED: New API Key from 'nexari-ai'
+const FIREBASE_API_KEY = "AIzaSyB2de7u59F6fqBcBDDDt-c4gKFr5rs-IKw"; 
+
+// 🔥 SAME SECRET KEY AS SERVER A (Client Side)
 const SERVICE_SECRET = Deno.env.get("NEXARI_SERVICE_SECRET") ?? "SUPER_SECRET_INTERNAL_KEY_999"; 
 
 serve(async (req) => {
@@ -11,14 +13,13 @@ serve(async (req) => {
     "Content-Type": "application/json",
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Service-Key" // Added X-Service-Key
+    "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Service-Key"
   });
 
   if (req.method === "OPTIONS") return new Response(null, { status: 204, headers });
 
-  // ... (Create Chat Route Same as Before) ...
+  // ... (Create Chat Route) ...
   if (url.pathname === "/create-chat" && req.method === "POST") {
-      // (Keep existing create chat logic)
        try {
         const authHeader = req.headers.get("Authorization");
         if (!authHeader?.startsWith("Bearer ")) throw new Error("No token provided");
@@ -33,25 +34,19 @@ serve(async (req) => {
       } catch (e: any) { return new Response(JSON.stringify({ error: e.message }), { status: 500, headers }); }
   }
 
-  // === 🔥 UPDATED ROUTE: REPORT VIOLATION (DUAL AUTH) ===
+  // === REPORT VIOLATION ===
   if (url.pathname === "/report-violation" && req.method === "POST") {
     try {
       let userId = "";
       let chatId = "";
-      
       const body = await req.json();
       chatId = body.chatId;
 
-      // 🔐 CHECK 1: IS IT SERVER A? (SERVICE SECRET)
       const serviceKey = req.headers.get("X-Service-Key");
       
       if (serviceKey === SERVICE_SECRET) {
-          console.log("✅ Authenticated via Service Secret (Server A)");
-          userId = body.userId; // Trust the request body because it comes from our server
-      } 
-      // 🔐 CHECK 2: IS IT THE USER? (FIREBASE TOKEN - Fallback)
-      else {
-          console.log("⚠️ Authenticated via User Token");
+          userId = body.userId; 
+      } else {
           const authHeader = req.headers.get("Authorization");
           if (!authHeader?.startsWith("Bearer ")) throw new Error("Unauthorized");
           const token = authHeader.split("Bearer ")[1];
@@ -61,14 +56,11 @@ serve(async (req) => {
 
       if (!userId || !chatId) throw new Error("Missing ID");
 
-      // --- LOGIC STARTS ---
       const serviceAccount = getServiceAccount();
       const accessToken = await getGoogleAccessToken(serviceAccount);
       const projectId = serviceAccount.project_id;
 
-      // Read Chat
       const chatData = await getFirestoreChat(projectId, accessToken, userId, chatId);
-      
       let currentCount = parseInt(chatData.fields?.violationCount?.integerValue || "0");
       let isBanned = chatData.fields?.isBanned?.booleanValue || false;
 
@@ -78,12 +70,9 @@ serve(async (req) => {
 
       await updateFirestoreBanStatus(projectId, accessToken, userId, chatId, currentCount, isBanned);
 
-      console.log(`[Security] Violation logged via Server-Link. User: ${userId}, Banned: ${isBanned}`);
-
       return new Response(JSON.stringify({ success: true, isBanned, violationCount: currentCount }), { status: 200, headers });
 
     } catch (error: any) {
-      console.error("Violation Report Error:", error.message);
       return new Response(JSON.stringify({ error: error.message }), { status: 500, headers });
     }
   }
@@ -91,10 +80,9 @@ serve(async (req) => {
   return new Response("Nexari AI Backend Running", { status: 200 });
 });
 
-// ... (Helper functions: getServiceAccount, verifyUserToken, etc. same as before) ...
+// ... (Helpers) ...
 function getServiceAccount() { const json = Deno.env.get("FIREBASE_SERVICE_ACCOUNT"); if (!json) throw new Error("Missing Env"); return JSON.parse(json); }
 async function verifyUserToken(token: string) { const res = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${FIREBASE_API_KEY}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ idToken: token }) }); const data = await res.json(); if (data.error) throw new Error("Invalid Token"); return data.users[0]; }
-// ... (Firestore Helpers same as before) ...
 async function createFirestoreChat(projectId: string, accessToken: string, userId: string, title: string) {
   const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/users/${userId}/chats`;
   const docData = { fields: { title: { stringValue: title }, createdAt: { timestampValue: new Date().toISOString() }, violationCount: { integerValue: "0" }, isBanned: { booleanValue: false } } };
@@ -124,5 +112,3 @@ async function getGoogleAccessToken(serviceAccount: any) {
   const tokenRes = await fetch("https://oauth2.googleapis.com/token", { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: `grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer&assertion=${sHead}.${sPay}.${sSig}` });
   return (await tokenRes.json()).access_token;
 }
-
-serve(async (req) => { /* Logic above */ });
