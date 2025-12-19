@@ -1,9 +1,11 @@
-/* main.ts (Host: piyusboss-ai-server-22) - Updated for Body Auth */
+/* main.ts (Host: piyusboss-ai-server-22) - FINAL RESTORED & FIXED */
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 
-const FIREBASE_API_KEY = "AIzaSyA5pQNoLixbthxXZ6pMBy_bgahiVxpRSR0"; 
-// 🔥 Must match the Key in PHP
-const SERVICE_SECRET = "SUPER_SECRET_INTERNAL_KEY_999"; 
+// 🔥 RESTORED: Pehle Env Var check karega, phir fallback karega
+const FIREBASE_API_KEY = Deno.env.get("FIREBASE_API_KEY") || "AIzaSyA5pQNoLixbthxXZ6pMBy_bgahiVxpRSR0"; 
+
+// 🔥 RESTORED: Service Secret bhi Env se aa sakta hai
+const SERVICE_SECRET = Deno.env.get("NEXARI_SERVICE_SECRET") || "SUPER_SECRET_INTERNAL_KEY_999"; 
 
 serve(async (req) => {
   const url = new URL(req.url);
@@ -21,16 +23,21 @@ serve(async (req) => {
   // === 🚀 ROUTE: SUBMIT FEEDBACK ===
   if (url.pathname === "/submit-feedback" && req.method === "POST") {
       try {
-        const body = await req.json(); // Data Read karo
-
-        // 🔐 SECURITY CHECK: Secret inside Body (Bypasses Header Stripping)
-        // Hum check kar rahe hain ki kya PHP ne secret key data mein milayi hai?
-        if (body.admin_secret_key !== SERVICE_SECRET) {
-            console.error("Access Denied: Invalid Secret Key in Body");
-            throw new Error("Access Denied: Direct Access Not Allowed. Use the App.");
+        // 1. Parse Body
+        let body;
+        try {
+            body = await req.json();
+        } catch(e) {
+            throw new Error("Invalid JSON Body");
         }
 
-        // --- AUTHENTICATION ---
+        // 🔐 SECURITY CHECK: Secret inside Body (Bypass Headers stripping)
+        if (body.admin_secret_key !== SERVICE_SECRET) {
+            console.error("Access Denied: Invalid Secret Key in Body");
+            throw new Error("Access Denied: Direct Access Not Allowed.");
+        }
+
+        // 2. Auth Token Check
         const authHeader = req.headers.get("Authorization");
         if (!authHeader?.startsWith("Bearer ")) throw new Error("No token provided");
         
@@ -39,12 +46,12 @@ serve(async (req) => {
         const userId = userData.localId;
         const email = userData.email || "Anonymous";
 
-        // --- RATE LIMIT LOGIC ---
+        // 3. Setup Firebase Connection
         const serviceAccount = getServiceAccount();
-        const accessToken = await getGoogleAccessToken(serviceAccount);
+        const accessToken = await getGoogleAccessToken(serviceAccount); // 🔥 FIX HERE (Base64)
         const projectId = serviceAccount.project_id;
 
-        // 1. Stats Fetch
+        // 4. Rate Limit Logic
         const userStats = await getFirestoreUserStats(projectId, accessToken, userId);
         
         const now = Date.now();
@@ -70,14 +77,13 @@ serve(async (req) => {
              return new Response(JSON.stringify({ error: "Daily limit reached (3/3). Try again tomorrow!" }), { status: 429, headers });
         }
 
-        // 2. Save Feedback
-        // Secret key ko database mein save hone se pehle hata do (Cleanup)
+        // 5. Save Feedback (Remove Secret First)
         const cleanBody = { ...body };
         delete cleanBody.admin_secret_key; 
 
         await createFirestoreFeedback(projectId, accessToken, userId, email, cleanBody);
 
-        // 3. Update Stats
+        // 6. Update Stats
         await updateFirestoreUserStats(projectId, accessToken, userId, count + 1, lastReset);
 
         return new Response(JSON.stringify({ success: true, count: count + 1 }), { status: 200, headers });
@@ -88,8 +94,8 @@ serve(async (req) => {
       }
   }
 
-  // ... (Existing /create-chat and /report-violation routes - Same as before) ...
-  // (Main routes for chat creation and violation reporting remain unchanged)
+  // ... (Existing /create-chat and /report-violation routes) ...
+  
   if (url.pathname === "/create-chat" && req.method === "POST") {
        try {
         const authHeader = req.headers.get("Authorization");
@@ -106,16 +112,15 @@ serve(async (req) => {
   }
 
   if (url.pathname === "/report-violation" && req.method === "POST") {
-    // (Existing Logic for report-violation)
      try {
       let userId = "";
       let chatId = "";
       const body = await req.json();
       chatId = body.chatId;
-      // Note: Header check might fail here too if called from PHP, but usually this is called from Deno-to-Deno.
-      // Assuming existing logic for now.
+      
       const serviceKey = req.headers.get("X-Service-Key");
-      if (serviceKey === "SUPER_SECRET_INTERNAL_KEY_999") { userId = body.userId; } 
+      // Environment variable se Secret check karega
+      if (serviceKey === SERVICE_SECRET) { userId = body.userId; } 
       else {
           const authHeader = req.headers.get("Authorization");
           if (!authHeader?.startsWith("Bearer ")) throw new Error("Unauthorized");
@@ -142,23 +147,91 @@ serve(async (req) => {
   return new Response("Nexari AI Backend Running", { status: 200 });
 });
 
-// === HELPER FUNCTIONS (Standard) ===
-function getServiceAccount() { const json = Deno.env.get("FIREBASE_SERVICE_ACCOUNT"); if (!json) throw new Error("Missing Env"); return JSON.parse(json); }
-async function verifyUserToken(token: string) { const res = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${FIREBASE_API_KEY}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ idToken: token }) }); const data = await res.json(); if (data.error) throw new Error("Invalid Token"); return data.users[0]; }
-async function getGoogleAccessToken(serviceAccount: any) {
-  const pem = serviceAccount.private_key; const clientEmail = serviceAccount.client_email;
-  const pemContents = pem.substring(27, pem.length - 25).replace(/\s/g, "");
-  const binaryDer = Uint8Array.from(atob(pemContents), c => c.charCodeAt(0));
-  const key = await crypto.subtle.importKey("pkcs8", binaryDer, { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, false, ["sign"]);
-  const now = Math.floor(Date.now() / 1000);
-  const payload = { iss: clientEmail, scope: "https://www.googleapis.com/auth/datastore", aud: "https://oauth2.googleapis.com/token", exp: now + 3600, iat: now };
-  const sHead = btoa(JSON.stringify({ alg: "RS256", typ: "JWT" })); const sPay = btoa(JSON.stringify(payload));
-  const sig = await crypto.subtle.sign("RSASSA-PKCS1-v1_5", key, new TextEncoder().encode(`${sHead}.${sPay}`));
-  const sSig = btoa(String.fromCharCode(...new Uint8Array(sig))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-  const tokenRes = await fetch("https://oauth2.googleapis.com/token", { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: `grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer&assertion=${sHead}.${sPay}.${sSig}` });
-  return (await tokenRes.json()).access_token;
+// === HELPER FUNCTIONS ===
+
+function getServiceAccount() { 
+    const json = Deno.env.get("FIREBASE_SERVICE_ACCOUNT"); 
+    if (!json) throw new Error("Missing Env: FIREBASE_SERVICE_ACCOUNT"); 
+    try {
+        return JSON.parse(json);
+    } catch (e) {
+        throw new Error("Invalid JSON in FIREBASE_SERVICE_ACCOUNT Env");
+    }
 }
-// --- FIRESTORE HELPERS ---
+
+async function verifyUserToken(token: string) { 
+    const res = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${FIREBASE_API_KEY}`, { 
+        method: "POST", 
+        headers: { "Content-Type": "application/json" }, 
+        body: JSON.stringify({ idToken: token }) 
+    }); 
+    const data = await res.json(); 
+    if (data.error) throw new Error("Invalid Token: " + data.error.message); 
+    return data.users[0]; 
+}
+
+// 🔥 FIX: ROBUST ACCESS TOKEN GENERATOR (Solves Base64 Error)
+async function getGoogleAccessToken(serviceAccount: any) {
+  try {
+      const pem = serviceAccount.private_key; 
+      const clientEmail = serviceAccount.client_email;
+
+      // 1. Clean the PEM string using Regex (Ye "Base64" error ka permanent fix hai)
+      const pemContents = pem.replace(/-----BEGIN PRIVATE KEY-----/g, "")
+                             .replace(/-----END PRIVATE KEY-----/g, "")
+                             .replace(/\s/g, "");
+
+      // 2. Decode Base64 safely
+      const binaryDer = Uint8Array.from(atob(pemContents), c => c.charCodeAt(0));
+
+      const key = await crypto.subtle.importKey(
+        "pkcs8", 
+        binaryDer, 
+        { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, 
+        false, 
+        ["sign"]
+      );
+
+      const now = Math.floor(Date.now() / 1000);
+      const payload = { 
+        iss: clientEmail, 
+        scope: "https://www.googleapis.com/auth/datastore", 
+        aud: "https://oauth2.googleapis.com/token", 
+        exp: now + 3600, 
+        iat: now 
+      };
+
+      const sHead = btoa(JSON.stringify({ alg: "RS256", typ: "JWT" })); 
+      const sPay = btoa(JSON.stringify(payload));
+      
+      const sig = await crypto.subtle.sign(
+          "RSASSA-PKCS1-v1_5", 
+          key, 
+          new TextEncoder().encode(`${sHead}.${sPay}`)
+      );
+
+      const sSig = btoa(String.fromCharCode(...new Uint8Array(sig)))
+          .replace(/\+/g, "-")
+          .replace(/\//g, "_")
+          .replace(/=+$/, "");
+
+      const tokenRes = await fetch("https://oauth2.googleapis.com/token", { 
+          method: "POST", 
+          headers: { "Content-Type": "application/x-www-form-urlencoded" }, 
+          body: `grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer&assertion=${sHead}.${sPay}.${sSig}` 
+      });
+
+      const tokenData = await tokenRes.json();
+      if (!tokenData.access_token) throw new Error("Failed to get Google Access Token: " + JSON.stringify(tokenData));
+      
+      return tokenData.access_token;
+  } catch (error) {
+      console.error("Crypto Error:", error);
+      throw new Error("Failed to decode Private Key. Check FIREBASE_SERVICE_ACCOUNT formatting.");
+  }
+}
+
+// --- FIRESTORE HELPERS (Same as before) ---
 async function getFirestoreUserStats(projectId: string, accessToken: string, userId: string) { const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/users/${userId}`; const res = await fetch(url, { headers: { "Authorization": `Bearer ${accessToken}` } }); if (!res.ok) return null; const data = await res.json(); if (data.fields && data.fields.feedback_stats) { return data.fields.feedback_stats.mapValue.fields; } return null; }
 async function updateFirestoreUserStats(projectId: string, accessToken: string, userId: string, count: number, lastReset: number) { const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/users/${userId}?updateMask.fieldPaths=feedback_stats`; const docData = { fields: { feedback_stats: { mapValue: { fields: { count: { integerValue: count.toString() }, lastReset: { integerValue: lastReset.toString() } } } } } }; await fetch(url, { method: "PATCH", headers: { "Authorization": `Bearer ${accessToken}`, "Content-Type": "application/json" }, body: JSON.stringify(docData) }); }
 async function createFirestoreFeedback(projectId: string, accessToken: string, userId: string, email: string, data: any) { const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/app_feedback`; const docData = { fields: { userId: { stringValue: userId }, userEmail: { stringValue: email }, message: { stringValue: data.message || "" }, category: { stringValue: data.type || "other" }, rating: { stringValue: data.rating || "none" }, deviceInfo: { stringValue: data.deviceInfo || "unknown" }, timestamp: { timestampValue: new Date().toISOString() }, status: { stringValue: "open" } } }; await fetch(url, { method: "POST", headers: { "Authorization": `Bearer ${accessToken}`, "Content-Type": "application/json" }, body: JSON.stringify(docData) }); }
