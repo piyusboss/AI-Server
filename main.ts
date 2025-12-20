@@ -1,10 +1,9 @@
-/* main.ts (Updated for Nexari AI) - Database Manager */
+/* main.ts (FINAL FIXED: New Key + Robust Auth) */
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 
-// 🔥 NEW NEXARI AI API KEY
+// 🔥 STEP 1: YAHAN NEW KEY HONI CHAHIYE (Maine Update Kar Di Hai)
 const FIREBASE_API_KEY = "AIzaSyB2de7u59F6fqBCbDDDt-c4gKFr5rs-IKw"; 
 
-// 🔥 SERVICE SECRET (Keep this consistent in your Env Vars)
 const SERVICE_SECRET = Deno.env.get("NEXARI_SERVICE_SECRET") ?? "SUPER_SECRET_INTERNAL_KEY_999"; 
 
 serve(async (req) => {
@@ -16,7 +15,6 @@ serve(async (req) => {
     "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Service-Key"
   });
 
-  // Handle CORS Preflight
   if (req.method === "OPTIONS") return new Response(null, { status: 204, headers });
 
   // === 🚀 ROUTE: CREATE CHAT ===
@@ -27,43 +25,44 @@ serve(async (req) => {
         
         const token = authHeader.split("Bearer ")[1];
         
-        // Verify User using New API Key
+        // 🔍 DEBUG LOG: Token Verification Start
+        console.log("1. Verifying Token...");
         const userData = await verifyUserToken(token);
-        const userId = userData.localId;
+        console.log(`2. Token Verified for UID: ${userData.localId}`);
         
+        const userId = userData.localId;
         const body = await req.json();
         
-        // Get Service Account (Make sure Env Var is updated!)
+        // 🔍 DEBUG LOG: Service Account
         const serviceAccount = getServiceAccount();
-        const accessToken = await getGoogleAccessToken(serviceAccount);
+        console.log(`3. Using Service Account Project: ${serviceAccount.project_id}`);
         
+        const accessToken = await getGoogleAccessToken(serviceAccount);
+        console.log("4. Google Access Token Generated");
+
         const chatId = await createFirestoreChat(serviceAccount.project_id, accessToken, userId, body.title || "New Chat");
+        console.log(`✅ Success! Chat Created ID: ${chatId}`);
         
         return new Response(JSON.stringify({ success: true, chatId: chatId }), { status: 200, headers });
       } catch (e: any) { 
+          console.error("❌ SERVER ERROR:", e.message); // Logs me error dikhega ab
           return new Response(JSON.stringify({ error: e.message }), { status: 500, headers }); 
       }
   }
 
-  // === 🔥 ROUTE: REPORT VIOLATION (DUAL AUTH) ===
+  // === 🔥 ROUTE: REPORT VIOLATION ===
   if (url.pathname === "/report-violation" && req.method === "POST") {
     try {
       let userId = "";
       let chatId = "";
-      
       const body = await req.json();
       chatId = body.chatId;
 
-      // 🔐 CHECK 1: IS IT SERVER A? (SERVICE SECRET)
       const serviceKey = req.headers.get("X-Service-Key");
       
       if (serviceKey === SERVICE_SECRET) {
-          console.log("✅ Authenticated via Service Secret (Server A)");
-          userId = body.userId; // Trust the request body because it comes from our server
-      } 
-      // 🔐 CHECK 2: IS IT THE USER? (FIREBASE TOKEN - Fallback)
-      else {
-          console.log("⚠️ Authenticated via User Token");
+          userId = body.userId; 
+      } else {
           const authHeader = req.headers.get("Authorization");
           if (!authHeader?.startsWith("Bearer ")) throw new Error("Unauthorized");
           const token = authHeader.split("Bearer ")[1];
@@ -73,29 +72,21 @@ serve(async (req) => {
 
       if (!userId || !chatId) throw new Error("Missing ID");
 
-      // --- LOGIC STARTS ---
       const serviceAccount = getServiceAccount();
       const accessToken = await getGoogleAccessToken(serviceAccount);
       const projectId = serviceAccount.project_id;
 
-      // Read Chat
       const chatData = await getFirestoreChat(projectId, accessToken, userId, chatId);
-      
       let currentCount = parseInt(chatData.fields?.violationCount?.integerValue || "0");
       let isBanned = chatData.fields?.isBanned?.booleanValue || false;
 
       currentCount++;
-      const MAX_VIOLATIONS = 3; 
-      if (currentCount >= MAX_VIOLATIONS) isBanned = true;
+      if (currentCount >= 3) isBanned = true;
 
       await updateFirestoreBanStatus(projectId, accessToken, userId, chatId, currentCount, isBanned);
-
-      console.log(`[Security] Violation logged via Server-Link. User: ${userId}, Banned: ${isBanned}`);
-
       return new Response(JSON.stringify({ success: true, isBanned, violationCount: currentCount }), { status: 200, headers });
 
     } catch (error: any) {
-      console.error("Violation Report Error:", error.message);
       return new Response(JSON.stringify({ error: error.message }), { status: 500, headers });
     }
   }
@@ -106,21 +97,24 @@ serve(async (req) => {
 // --- HELPER FUNCTIONS ---
 
 function getServiceAccount() { 
-    // ⚠️ IMPORTANT: Update 'FIREBASE_SERVICE_ACCOUNT' Env Var in Deno Deploy with NEW Project JSON
     const json = Deno.env.get("FIREBASE_SERVICE_ACCOUNT"); 
     if (!json) throw new Error("Missing Env: FIREBASE_SERVICE_ACCOUNT"); 
-    return JSON.parse(json); 
+    try {
+        return JSON.parse(json); 
+    } catch(e) {
+        throw new Error("Invalid JSON in FIREBASE_SERVICE_ACCOUNT Env Var");
+    }
 }
 
 async function verifyUserToken(token: string) { 
-    // Verifies against the new NEXARI-AI project
+    // Uses the NEW Key to verify
     const res = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${FIREBASE_API_KEY}`, { 
         method: "POST", 
         headers: { "Content-Type": "application/json" }, 
         body: JSON.stringify({ idToken: token }) 
     }); 
     const data = await res.json(); 
-    if (data.error) throw new Error("Invalid Token: " + data.error.message); 
+    if (data.error) throw new Error("Token Error: " + data.error.message); 
     return data.users[0]; 
 }
 
@@ -167,12 +161,18 @@ async function updateFirestoreBanStatus(projectId: string, accessToken: string, 
   });
 }
 
+// 🔥 IMPROVED: Robust Key Parsing (Failsafe)
 async function getGoogleAccessToken(serviceAccount: any) {
   const pem = serviceAccount.private_key; 
   const clientEmail = serviceAccount.client_email;
   
-  // Format Private Key
-  const pemContents = pem.substring(27, pem.length - 25).replace(/\s/g, "");
+  // Safely extract Base64 body using Regex (Behter than substring)
+  const pemHeader = "-----BEGIN PRIVATE KEY-----";
+  const pemFooter = "-----END PRIVATE KEY-----";
+  
+  // Remove headers, footers and newlines/spaces
+  const pemContents = pem.replace(pemHeader, "").replace(pemFooter, "").replace(/\s/g, "");
+  
   const binaryDer = Uint8Array.from(atob(pemContents), c => c.charCodeAt(0));
   const key = await crypto.subtle.importKey("pkcs8", binaryDer, { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, false, ["sign"]);
   
